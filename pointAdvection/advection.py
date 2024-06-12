@@ -455,6 +455,10 @@ class advection():
         dy = self.velocity.y[1] - self.velocity.y[0]
         setattr(self.velocity, 'spacing', (dx, dy))
         setattr(self.velocity, 'type', 'grid')
+        try:
+            self.velocity.__update_size_and_shape__()
+        except:
+            pass
         return self
 
     # PURPOSE: build a data object from a list of other data objects
@@ -551,6 +555,10 @@ class advection():
         dy = self.velocity.y[1] - self.velocity.y[0]
         setattr(self.velocity, 'spacing', (dx, dy))
         setattr(self.velocity, 'type', 'grid')
+        try:
+            self.velocity.__update_size_and_shape__()
+        except:
+            pass
         return self
 
     # PURPOSE: calculate the mean velocity field
