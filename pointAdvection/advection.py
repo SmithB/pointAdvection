@@ -585,7 +585,7 @@ class advection():
                                'eV':np.sqrt(np.nansum(wV**2*v.eV**2, axis=2))})
         bad = np.sum(np.isfinite(wU), axis=2)==0
         for field in ['U','V']:
-            getattr(vel_mean, field)[bad]=np.NaN
+            getattr(vel_mean, field)[bad]=np.nan
         # fill gaps in vel_mean
         if w_smooth is not None:
             vel_mean.fill_smoothed(fields=['U','V', 'eU', 'eV'], w_smooth=w_smooth)
@@ -668,7 +668,7 @@ class advection():
             v_temp[w_temp > 0] /= w_temp[w_temp>0]
             eu2_temp[w_temp > 0] /= w_temp[w_temp>0]
             ev2_temp[w_temp > 0] /= w_temp[w_temp>0]
-            to_replace = ((~np.isfinite(this_U)) & (w_temp>0)).ravel()
+            to_replace = ((~np.isfinite(this_U)) & (w_temp==0)).ravel()
             if np.any(to_replace):
                 this_U.ravel()[to_replace] = u_temp.ravel()[to_replace]
                 this_V.ravel()[to_replace] = v_temp.ravel()[to_replace]
@@ -750,7 +750,6 @@ class advection():
         # define grids of working coordinates
         dx=self.velocity.x[1]-self.velocity.x[0]
         x0, y0 = [np.arange(bb[0]-dx, bb[1]+dx, dx) for bb in bounds[0:2]]
-        print([x0.shape, y0.shape])
         xg, yg=np.meshgrid(x0, y0)
         epoch=self.t0
         # output grids:
@@ -780,8 +779,8 @@ class advection():
                             self.translate_parcel(step=advection_time_step)
                         except ValueError:
                             # ValueError is thrown when all points are outside the velocity map
-                            self.x0 *= np.NaN
-                            self.y0 *= np.NaN
+                            self.x0 *= np.nan
+                            self.y0 *= np.nan
                         xf[rows, cols, this_ind]=self.x0.reshape(xg_sub.shape)
                         yf[rows, cols, this_ind]=self.y0.reshape(xg_sub.shape)
                         # update the initial coordinates for the next translation
@@ -867,8 +866,8 @@ class advection():
                         self.translate_parcel(step=advection_time_step)
                     except ValueError:
                         # ValueError is thrown when all points are outside the velocity map
-                        self.x0 *= np.NaN
-                        self.y0 *= np.NaN
+                        self.x0 *= np.nan
+                        self.y0 *= np.nan
                     x_init[rows, cols, t_ind] = self.x0.reshape(xg_sub.shape)
                     y_init[rows, cols, t_ind] = self.y0.reshape(xg_sub.shape)
 
