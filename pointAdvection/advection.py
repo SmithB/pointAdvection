@@ -97,7 +97,7 @@ class advection():
         ``pointCollection`` object of velocity fields
         Can be type ``grid`` or ``mesh``
     vel_mean: obj
-        ``pointCollection`` object of mean velocity field
+        ``pointCollection`` object containing mean velocity field
     streak: dict
         path traversed during advection (set kwarg 'streak' to true
                         in translate methods to enable)
@@ -676,7 +676,7 @@ class advection():
             v_temp[w_temp > 0] /= w_temp[w_temp>0]
             eu2_temp[w_temp > 0] /= w_temp[w_temp>0]
             ev2_temp[w_temp > 0] /= w_temp[w_temp>0]
-            to_replace = ((~np.isfinite(this_U)) & (w_temp==0)).ravel()
+            to_replace = ((~np.isfinite(this_U)) & (w_temp>0)).ravel()
             if np.any(to_replace):
                 this_U.ravel()[to_replace] = u_temp.ravel()[to_replace]
                 this_V.ravel()[to_replace] = v_temp.ravel()[to_replace]
@@ -1197,8 +1197,9 @@ class advection():
         if (self.velocity.type == 'grid'):
             # create polygon with the extents of the image
             xmin,xmax,ymin,ymax = self.velocity.extent
-            xpts = np.array([xmin, xmax, xmax, xmin, xmin])
-            ypts = np.array([ymin, ymin, ymax, ymax, ymin])
+            return (x>=xmin) & (x<= xmax) & (y>= ymin) & (y<=ymax)
+            #xpts = np.array([xmin, xmax, xmax, xmin, xmin])
+            #ypts = np.array([ymin, ymin, ymax, ymax, ymin])
         elif (self.velocity.type == 'mesh'):
             # create polygon with convex hull of points
             points = np.c_[self.velocity.x, self.velocity.y]
