@@ -47,9 +47,14 @@ def parse_input_args(argv):
     parser.add_argument('--save_base', type=str, default='./xy0_interpolators')
     parser.add_argument('--EPSG', type=int, default=3031, help='SRS EPSG for the interpolator')
     parser.add_argument('--no_crop', action='store_true', help='unless this is set, the output will be cropped to the specified width')
+    parser.add_argument('--quiet', action='store_true', help='no verbose output')
     parser.add_argument('--interpolator_save_file', type=str)
 
     args, unk=parser.parse_known_args(argv)
+    if args.quiet:
+        setattr(args, 'VERBOSE', False)
+    else:
+        setattr(args, 'VERBOSE', True)
 
     if args.t_range is not None:
         if ',' in args.t_range[0]:
@@ -80,6 +85,8 @@ def make_adv_from_json(args, xg, yg, bds_pad):
 
     for ind in time_order:
         temp=pointAdvection.velocity().from_file(vel_files[ind]['file'], format=vel_files[ind]['format'],  bounds=bds_pad)
+        if 'mask' not in temp.fields:
+            temp.mask=np.isfinite(temp.U).astype(float)
         if temp.time is None:
             if temp.t is not None:
                 temp.time=temp.t
@@ -123,6 +130,9 @@ def make_vel_interpolator_for_xy(argv):
     else:
         interpolator_save_file=f'{args.save_base}/E{int(args.xy0[0]/1000)}_N{int(args.xy0[1]/1000)}_' +\
         f'{args.t_range[0]}_{args.lagrangian_epoch}_{args.t_range[1]}.h5'
+
+    if args.VERBOSE:
+        print(f"working on {interpolator_save_file}")
 
     bds = [jj + np.array([-1, 1])*args.width*0.5 for jj in args.xy0]
 
