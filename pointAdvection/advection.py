@@ -89,7 +89,7 @@ class advection():
         ``pointCollection`` object of velocity fields
         Can be type ``grid`` or ``mesh``
     vel_mean: obj
-        ``pointCollection`` object of mean velocity field
+        ``pointCollection`` object containing mean velocity field
     streak: dict
         path traversed during advection (set kwarg 'streak' to true
                         in translate methods to enable)
@@ -334,6 +334,7 @@ class advection():
                 self.velocity.eV = np.transpose(self.velocity.eV, axes=(1,2,0))
             # update time dimension axis
             self.velocity.t_axis = 2
+            
         # create mask for invalid velocity points
         mask = ((self.velocity.U.data == self.velocity.fill_value) & \
             (self.velocity.V.data == self.velocity.fill_value))
@@ -447,6 +448,10 @@ class advection():
         dy = self.velocity.y[1] - self.velocity.y[0]
         setattr(self.velocity, 'spacing', (dx, dy))
         setattr(self.velocity, 'type', 'grid')
+        try:
+            self.velocity.__update_size_and_shape__()
+        except:
+            pass
         return self
 
     # PURPOSE: build a data object from a list of other data objects
@@ -543,6 +548,10 @@ class advection():
         dy = self.velocity.y[1] - self.velocity.y[0]
         setattr(self.velocity, 'spacing', (dx, dy))
         setattr(self.velocity, 'type', 'grid')
+        try:
+            self.velocity.__update_size_and_shape__()
+        except:
+            pass
         return self
 
     # PURPOSE: calculate the mean velocity field
@@ -742,7 +751,6 @@ class advection():
         # define grids of working coordinates
         dx=self.velocity.x[1]-self.velocity.x[0]
         x0, y0 = [np.arange(bb[0]-dx, bb[1]+dx, dx) for bb in bounds[0:2]]
-        print([x0.shape, y0.shape])
         xg, yg=np.meshgrid(x0, y0)
         epoch=self.t0
         # output grids:
@@ -1182,8 +1190,9 @@ class advection():
         if (self.velocity.type == 'grid'):
             # create polygon with the extents of the image
             xmin,xmax,ymin,ymax = self.velocity.extent
-            xpts = np.array([xmin, xmax, xmax, xmin, xmin])
-            ypts = np.array([ymin, ymin, ymax, ymax, ymin])
+            return (x>=xmin) & (x<= xmax) & (y>= ymin) & (y<=ymax)
+            #xpts = np.array([xmin, xmax, xmax, xmin, xmin])
+            #ypts = np.array([ymin, ymin, ymax, ymax, ymin])
         elif (self.velocity.type == 'mesh'):
             # create polygon with convex hull of points
             points = np.c_[self.velocity.x, self.velocity.y]
@@ -1880,8 +1889,10 @@ class advection():
         """
         return timescale.time._to_sec[self.time_units]
 
+
     def __getitem__(self, key):
         return getattr(self, key)
 
     def __setitem__(self, key, value):
         setattr(self, key, value)
+
