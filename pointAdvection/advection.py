@@ -649,11 +649,11 @@ class advection():
             ev2_temp = np.zeros_like(this_U)
             w_temp = np.zeros_like(this_U)
             if annual:
-                for dt in [-delta_tol, delta_tol]:
+                for dt in [-delta_year, delta_year]:
                     # try to calculate the average of the previous year and the
                     # next year
-                    other_year = np.argmin(np.abs(v.time[ii]+delta_year-v.time))
-                    if np.abs((v.time[other_year]-v.time[ii]).astype(float)) > delta_tol:
+                    other_year = np.argmin(np.abs(v.time[ii]+dt-v.time))
+                    if np.abs((v.time[ii]+dt-v.time[other_year]).astype(float)) > delta_tol:
                         continue
                     good = np.isfinite(v.U[:,:,other_year])
                     u_temp[good] += v.U[:,:,other_year][good]
@@ -717,7 +717,7 @@ class advection():
 
     #PURPOSE: make interpolation objects to allow fast interpolation final displacements
     def xy1_interpolator(self, bounds=None, t_range=None, t_step=None, blocksize=100,
-                         advection_time_step=0.25, report_progress=False):
+                         advection_time_step=0.25, report_progress=False, DEBUG=False):
         '''
         Make interpolation objects for the final position of parcels.
 
@@ -755,6 +755,8 @@ class advection():
             ti = self.velocity.t
         else:
             ti = np.arange(bounds[2][0], bounds[2][1]+t_step, t_step)
+        if DEBUG:
+            print(f'time_steps = {ti}')
         # define grids of working coordinates
         dx=self.velocity.x[1]-self.velocity.x[0]
         x0, y0 = [np.arange(bb[0]-dx, bb[1]+dx, dx) for bb in bounds[0:2]]
@@ -808,7 +810,8 @@ class advection():
 
 
     #PURPOSE: interpolation objects to allow fast interpolation initial positions
-    def xy0_interpolator(self, bounds=None, t_range=None, t_step=None, advection_time_step=10, blocksize=100):
+    def xy0_interpolator(self, bounds=None, t_range=None, t_step=None, advection_time_step=10,
+                         blocksize=100, DEBUG=False, report_progress=False):
         """
         Build interpolation objects from initial to final positions
 
@@ -848,6 +851,8 @@ class advection():
             ti = self.velocity.t
         else:
             ti = np.arange(bounds[2][0], bounds[2][1]+t_step, t_step)
+        if DEBUG:
+            print('xy0_interpolator: time_steps={ti}')
         dx=self.velocity.x[1]-self.velocity.x[0]
 
         x0, y0 = [np.arange(bb[0]-dx, bb[1]+dx, dx) for bb in bounds[0:2]]
@@ -865,6 +870,8 @@ class advection():
             for row0 in np.arange(0, y0.size, y_blocksize):
                 rows=slice(row0, np.minimum(row0+y_blocksize, y0.size))
                 for col0 in np.arange(0, x0.size, x_blocksize):
+                    if report_progress:
+                        last_t=time.time()
                     cols=slice(col0, np.minimum(col0+x_blocksize, x0.size))
                     xg_sub=xg[rows, cols, t_ind]
                     yg_sub=yg[rows, cols, t_ind]
@@ -879,7 +886,10 @@ class advection():
                     x_init[rows, cols, t_ind] = self.x0.reshape(xg_sub.shape)
                     y_init[rows, cols, t_ind] = self.y0.reshape(xg_sub.shape)
 
-
+                    if report_progress:
+                        t_elapsed=time.time()-last_t
+                        last_t=time.time()
+                        print(f'row0={row0} out of {y0.size}, col0={col0} out of {x0.size}, dt={t_elapsed}')
         grid_obj = pc.grid.data().from_dict({'x':x0, 'y':y0,'t':ti,'x0':x_init,'y0':y_init})
 
         return grid_obj
