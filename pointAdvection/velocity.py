@@ -1,11 +1,14 @@
-import pointCollection as pc
-import geopandas as gpd
-import os
-import numpy as np
-import shapely
-import re
-import datetime
-class velocity(pc.grid.data):
+import pointAdvection.utilities
+
+# attempt imports
+pc = pointAdvection.utilities.import_dependency('pointCollection')
+
+try:
+    obj = pc.grid.data
+except AttributeError:
+    obj = object
+
+class velocity(obj):
     def __init__(self):
         self.t=None
         super(velocity, self).__init__()

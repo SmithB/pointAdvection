@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 advection.py
-Written by Tyler Sutterley and Ben Smith (04/2024)
+Written by Tyler Sutterley and Ben Smith (09/2024)
 Routines for advecting ice parcels using velocity estimates
 
 PYTHON DEPENDENCIES:
@@ -12,7 +12,7 @@ PYTHON DEPENDENCIES:
     scipy: Scientific Tools for Python
         https://docs.scipy.org/doc/
     netCDF4: Python interface to the netCDF C library
-         https://unidata.github.io/netcdf4-python/netCDF4/index.html
+        https://unidata.github.io/netcdf4-python/netCDF4/index.html
     gdal: Pythonic interface to the Geospatial Data Abstraction Library (GDAL)
         https://pypi.python.org/pypi/GDAL/
     matplotlib: Python 2D plotting library
@@ -22,6 +22,8 @@ PYTHON DEPENDENCIES:
         https://github.com/SmithB/pointCollection
 
 UPDATE HISTORY:
+    Updated 09/2024: use wrapper to importlib for optional dependencies
+    Updated 05/2024: make subscriptable and allow item assignment
     Updated 04/2024: added base level attribute for time units
     Updated 05/2023: add fill gaps function and xy0 interpolator
         add option to advect parcels to set the number of steps directly
@@ -51,29 +53,20 @@ import os
 import io
 import re
 import copy
+import time
 import logging
 import pathlib
-import warnings
 import numpy as np
 import scipy.interpolate
 import scipy.spatial
-import matplotlib.pyplot as plt
-import matplotlib.tri as mtri
+import pointAdvection.utilities
+
 import time
 # attempt imports
-try:
-    import pointCollection as pc
-except (AttributeError, ImportError, ModuleNotFoundError) as exc:
-    warnings.filterwarnings("module")
-    warnings.warn("pointCollection not available", ImportWarning)
-# attempt imports
-try:
-    import timescale
-except (AttributeError, ImportError, ModuleNotFoundError) as exc:
-    warnings.filterwarnings("module")
-    warnings.warn("timescale not available", ImportWarning)
-# ignore warnings
-warnings.filterwarnings("ignore")
+plt = pointAdvection.utilities.import_dependency('matplotlib.pyplot')
+mtri = pointAdvection.utilities.import_dependency('matplotlib.mtri')
+pc = pointAdvection.utilities.import_dependency('pointCollection')
+timescale = pointAdvection.utilities.import_dependency('timescale')
 
 class advection():
     """
@@ -97,7 +90,7 @@ class advection():
         ``pointCollection`` object of velocity fields
         Can be type ``grid`` or ``mesh``
     vel_mean: obj
-        ``pointCollection`` object containing mean velocity field
+        ``pointCollection`` object of mean velocity field
     streak: dict
         path traversed during advection (set kwarg 'streak' to true
                         in translate methods to enable)
@@ -258,7 +251,7 @@ class advection():
     def from_nc(self,
             filename: str | io.IOBase,
             field_mapping: dict = dict(U='VX', V='VY'),
-            group: str or None = None,
+            group: str | None = None,
             bounds: list | np.ndarray | None = None,
             buffer: float | None = 5e4,
             scale: float = 1.0/31557600.0, **kwargs
@@ -1905,3 +1898,9 @@ class advection():
         Converts time to seconds
         """
         return timescale.time._to_sec[self.time_units]
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
