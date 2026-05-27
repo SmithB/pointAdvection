@@ -68,6 +68,8 @@ class velocity(pc.grid.data):
             self._from_NSIDC_AA(filename,**kwargs)
         elif format=='local_vrt':
             self._from_local_vrt(filename, **kwargs)
+        elif format=='h5':
+            self.from_h5(filename, **kwargs)
         else:
             print(f"format {format} for file {filename} unknown, skipping")
         self.ndim=len(self.U.shape)
