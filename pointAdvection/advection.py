@@ -20,6 +20,9 @@ PYTHON DEPENDENCIES:
         https://github.com/matplotlib/matplotlib
     pointCollection: Utilities for organizing and manipulating point data
         https://github.com/SmithB/pointCollection
+    numba (optional): JIT compiler for numerical Python
+        https://numba.pydata.org
+        used for faster linear interpolation of time-variable velocity grids
 
 UPDATE HISTORY:
     Updated 09/2024: use wrapper to importlib for optional dependencies
@@ -55,6 +58,7 @@ import re
 import copy
 import time
 import logging
+import itertools
 import pathlib
 import numpy as np
 import scipy.interpolate
@@ -66,6 +70,94 @@ plt = pointAdvection.utilities.import_dependency('matplotlib.pyplot')
 mtri = pointAdvection.utilities.import_dependency('matplotlib.mtri')
 pc = pointAdvection.utilities.import_dependency('pointCollection')
 timescale = pointAdvection.utilities.import_dependency('timescale')
+# numba is optional: without it, linear interpolation of time-variable
+# velocity grids uses numpy (with identical results, but more slowly)
+try:
+    import numba
+except ImportError:
+    numba = None
+
+if numba is not None:
+    @numba.njit(cache=True)
+    def _cell_index(axis, c, regular, a0, scale):
+        """
+        Index of the cell of an increasing axis that contains c, the same as
+        ``np.searchsorted(axis, c, side='right') - 1`` clipped to [0, n-2]
+
+        For a regular axis, the index is estimated from the spacing (a0 is
+        the first node and scale is the inverse of the spacing) and then
+        corrected so it is exact; otherwise it is found by binary search.
+        """
+        n = axis.size
+        if regular:
+            f = (c - a0)*scale
+            if not (f == f):
+                # NaN (which searchsorted sorts after the end of the axis)
+                return n - 2
+            i = int(min(max(f, 0.0), n - 1.0))
+            while (i > 0) and (c < axis[i]):
+                i -= 1
+            while (i < n - 1) and (c >= axis[i+1]):
+                i += 1
+        else:
+            lo, hi = 0, n
+            while lo < hi:
+                mid = (lo + hi) >> 1
+                if c < axis[mid]:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            i = lo - 1
+        return min(max(i, 0), n - 2)
+
+    @numba.njit(cache=True)
+    def _linear_grid_kernel(ay, ax, at, ry, rx, rt, values, sy, sx, st, y, x, t):
+        """
+        Linear interpolation of stacked U and V values on a (y, x, time)
+        grid, with the same operations, in the same order, as
+        ``advection.__linear_grid_interpolation__`` (and so as
+        ``scipy.interpolate.RegularGridInterpolator``)
+
+        t has one value for all of the points, or one value per point.
+        """
+        n = y.size
+        UV = np.empty((n, 2))
+        sy0 = (ay.size - 1)/(ay[-1] - ay[0])
+        sx0 = (ax.size - 1)/(ax[-1] - ax[0])
+        st0 = (at.size - 1)/(at[-1] - at[0])
+        single = (t.size == 1)
+        it = _cell_index(at, t[0], rt, at[0], st0)
+        dt = (t[0] - at[it])/(at[it+1] - at[it])
+        for k in range(n):
+            if not single:
+                it = _cell_index(at, t[k], rt, at[0], st0)
+                dt = (t[k] - at[it])/(at[it+1] - at[it])
+            iy = _cell_index(ay, y[k], ry, ay[0], sy0)
+            dy = (y[k] - ay[iy])/(ay[iy+1] - ay[iy])
+            ix = _cell_index(ax, x[k], rx, ax[0], sx0)
+            dx = (x[k] - ax[ix])/(ax[ix+1] - ax[ix])
+            base = iy*sy + ix*sx + it*st
+            # sum the contributions of the corners of the cell
+            u = 0.0
+            v = 0.0
+            first = True
+            for cy in range(2):
+                wy = (1 - dy) if (cy == 0) else dy
+                for cx in range(2):
+                    wyx = wy*((1 - dx) if (cx == 0) else dx)
+                    for ct in range(2):
+                        w = wyx*((1 - dt) if (ct == 0) else dt)
+                        j = base + cy*sy + cx*sx + ct*st
+                        if first:
+                            u = values[j, 0]*w
+                            v = values[j, 1]*w
+                            first = False
+                        else:
+                            u += values[j, 0]*w
+                            v += values[j, 1]*w
+            UV[k, 0] = u
+            UV[k, 1] = v
+        return UV
 
 class advection():
     """
@@ -112,8 +204,13 @@ class advection():
         Temporal units for advection
     fill_value: float or NoneType, default np.nan
         invalid value for output data
+    use_numba: bool
+        Use numba for linear interpolation of time-variable velocity grids
+        (True if numba is installed).  Set to False to use numpy, which gives
+        identical results more slowly.
     """
     np.seterr(invalid='ignore')
+    use_numba = numba is not None
     def __init__(self, **kwargs):
         # set default keyword arguments
         kwargs.setdefault('x', None)
@@ -1476,6 +1573,11 @@ class advection():
         kwargs.setdefault('t', None)
         kwargs.setdefault('method', self.method)
         kwargs.setdefault('fill_value', self.fill_value)
+        # velocities are never extrapolated in time: times before the first
+        # (after the last) velocity map get the velocities of the first (last) map
+        if (self.velocity.ndim == 3) and (kwargs['t'] is not None):
+            kwargs['t'] = np.clip(kwargs['t'], np.nanmin(self.velocity.time),
+                np.nanmax(self.velocity.time))
         # output interpolated data
         U = np.full_like(kwargs['x'], np.nan)
         V = np.full_like(kwargs['x'], np.nan)
@@ -1486,10 +1588,38 @@ class advection():
         # check that there are indice values (0 is falsy)
         if not np.any(v) and not np.any(v == 0):
             return (U, V)
+        # linear interpolation of a time-variable grid: interpolate U and V together
+        # (scipy has a faster path for two-dimensional grids)
+        if (kwargs['method'] == 'linear') and (self.velocity.ndim == 3):
+            grid = self.__linear_grid__()
+        else:
+            grid = None
+        if grid is not None:
+            t = np.asarray(kwargs['t'])
+            if (np.ndim(t) > 0) and (np.size(t) > 0) and np.all(t == t.flat[0]):
+                # all of the points have the same time
+                t = t.flat[0]
+            else:
+                t = np.broadcast_to(t, np.shape(kwargs['x']))
+            coords = [kwargs['y'], kwargs['x'], t]
+            if (v.size < U.size):
+                coords = [c[v] if np.ndim(c) > 0 else c for c in coords]
+            UV = self.__linear_grid_interpolation__(grid, coords,
+                use_numba=self.use_numba)
+            if (v.size < U.size):
+                U[v], V[v] = UV[:,0], UV[:,1]
+            else:
+                U, V = UV[:,0].copy(), UV[:,1].copy()
+            # replace invalid values with fill value (as np.nan_to_num does)
+            for W in (U, V):
+                if not np.isfinite(W).all():
+                    np.nan_to_num(W, copy=False, nan=kwargs['fill_value'])
+            return (U, V)
         # build regular grid interpolants for input grid
-        if not self.interpolant and (self.velocity.ndim == 3):
+        if ('U' not in self.interpolant) and (self.velocity.ndim == 3):
             # use scipy regular grid to interpolate values for a given method
-            # will extrapolate velocities forward in time if outside range
+            # (times have been clipped to the range of the maps, and points
+            # outside the map extents are excluded, so nothing is extrapolated)
             self.interpolant['U'] = scipy.interpolate.RegularGridInterpolator(
                 (self.velocity.y, self.velocity.x, self.velocity.time),
                 self.velocity.U, method=kwargs['method'], bounds_error=False,
@@ -1498,7 +1628,7 @@ class advection():
                 (self.velocity.y, self.velocity.x, self.velocity.time),
                 self.velocity.V, method=kwargs['method'], bounds_error=False,
                 fill_value=None)
-        elif not self.interpolant and (self.velocity.ndim == 2):
+        elif ('U' not in self.interpolant) and (self.velocity.ndim == 2):
             # use scipy regular grid to interpolate values for a given method
             self.interpolant['U'] = scipy.interpolate.RegularGridInterpolator(
                 (self.velocity.y, self.velocity.x), self.velocity.U,
@@ -1521,6 +1651,125 @@ class advection():
         U = np.nan_to_num(U, nan=kwargs['fill_value'])
         V = np.nan_to_num(V, nan=kwargs['fill_value'])
         return (U, V)
+
+    def __linear_grid__(self):
+        """
+        Axes and stacked U and V values of a time-variable velocity grid
+        for linear interpolation, cached in self.interpolant['UV']
+
+        Returns None if the grid cannot be interpolated this way (it has
+        an axis with fewer than two points, or that is not monotonic),
+        in which case RegularGridInterpolator is used.
+
+        If numba is used, this also compiles the interpolation kernel (or
+        loads it from the cache), so that processes forked afterwards
+        don't each compile it.
+        """
+        if 'UV' in self.interpolant:
+            return self.interpolant['UV']
+        self.interpolant['UV'] = None
+        axes = [self.velocity.y, self.velocity.x, self.velocity.time]
+        axes = [np.asarray(axis, dtype=float).ravel() for axis in axes]
+        values = np.stack([np.asarray(self.velocity.U, dtype=float),
+                           np.asarray(self.velocity.V, dtype=float)], axis=-1)
+        if values.shape[:-1] != tuple(axis.size for axis in axes):
+            return None
+        for dim, axis in enumerate(axes):
+            if axis.size < 2:
+                return None
+            steps = np.diff(axis)
+            if np.all(steps < 0):
+                # flip descending axes, as RegularGridInterpolator does
+                axes[dim] = axis[::-1].copy()
+                values = np.flip(values, axis=dim)
+            elif not np.all(steps > 0):
+                return None
+        shape = values.shape[:-1]
+        # offsets in the flattened values between neighboring nodes along each axis
+        strides = [int(np.prod(shape[dim+1:])) for dim in range(len(shape))]
+        values = np.ascontiguousarray(values).reshape(-1, 2)
+        # (nearly) evenly spaced axes, where the numba kernel can find
+        # cells from the spacing instead of by searching
+        regular = []
+        for axis in axes:
+            steps = np.diff(axis)
+            regular.append(bool(np.all(np.abs(steps - steps[0]) <= 1e-3*steps[0])))
+        axes = [np.ascontiguousarray(axis) for axis in axes]
+        self.interpolant['UV'] = (axes, values, strides, regular)
+        if self.use_numba and (numba is not None):
+            self.__linear_grid_interpolation__(self.interpolant['UV'],
+                [axis[:1] for axis in axes], use_numba=True)
+        return self.interpolant['UV']
+
+    @staticmethod
+    def __linear_grid_interpolation__(grid, coords, use_numba=None):
+        """
+        Linearly interpolate stacked U and V grid values to coordinates
+
+        Gives the same result as scipy.interpolate.RegularGridInterpolator
+        with method='linear' and fill_value=None (so values are extrapolated
+        outside the grid), with the same order of operations, but finds the
+        grid cells and weights once for both fields.  regular_grid_interpolation
+        clips the times and excludes points outside the map extents, so it
+        never uses the extrapolation.
+
+        Uses a numba kernel when numba is installed, otherwise numpy; the
+        two give identical results.
+
+        Parameters
+        ----------
+        grid: tuple
+            axes, values, strides, and regular-spacing flags from __linear_grid__
+        coords: list
+            coordinates in the order of the axes (y, x, and time).  y and x
+            are arrays; time can be an array or a scalar (for points that
+            all have the same time)
+        use_numba: bool or NoneType, default None
+            use the numba kernel (default: if numba is installed)
+
+        Returns
+        -------
+        UV: np.ndarray
+            interpolated U and V, shape (N, 2)
+        """
+        axes, values, strides, regular = grid
+        if use_numba is None:
+            use_numba = (numba is not None)
+        if use_numba and (numba is not None):
+            y, x = [np.ascontiguousarray(c, dtype=np.float64).ravel() for c in coords[:2]]
+            t = np.ascontiguousarray(coords[2], dtype=np.float64).ravel()
+            if (t.size != 1) and (t.size != y.size):
+                t = np.ascontiguousarray(np.broadcast_to(t, y.shape))
+            return _linear_grid_kernel(*axes, *regular, values, *strides, y, x, t)
+        base = 0
+        weights = []
+        for axis, c, stride in zip(axes, coords, strides):
+            # the cell containing each coordinate (the first or last cell if outside the axis)
+            i = np.searchsorted(axis, c, side='right') - 1
+            if np.ndim(i) == 0:
+                i = int(np.clip(i, 0, axis.size - 2))
+            else:
+                np.clip(i, 0, axis.size - 2, out=i)
+            d = (c - axis[i])/(axis[i+1] - axis[i])
+            weights.append((1 - d, d))
+            base = base + i*stride
+        UV = None
+        # products of the weights along the leading axes, shared between corners
+        partial = {}
+        # sum the contributions of the corners of each cell
+        for corner in itertools.product((0, 1), repeat=len(axes)):
+            for dim in range(len(corner)):
+                key = corner[:dim+1]
+                if key not in partial:
+                    w = weights[dim][corner[dim]]
+                    partial[key] = w if (dim == 0) else partial[corner[:dim]]*w
+            offset = sum(stride for stride, c in zip(strides, corner) if c)
+            term = values.take(base + offset, axis=0, mode='clip')*np.asarray(partial[corner])[..., None]
+            if UV is None:
+                UV = term
+            else:
+                UV += term
+        return UV
 
     # PURPOSE: use unstructured interpolation of velocities to coordinates
     def unstructured_interpolation(self, **kwargs):

@@ -51,6 +51,7 @@ This software is also dependent on other commonly used Python packages:
 - `lxml: processing XML and HTML in Python <https://pypi.python.org/pypi/lxml>`_
 - `matplotlib: Python 2D plotting library <https://matplotlib.org/>`_
 - `netCDF4: Python interface to the netCDF C library <https://unidata.github.io/netcdf4-python/netCDF4/index.html>`_
+- `numba: JIT compiler for numerical Python (optional; speeds up velocity interpolation) <https://numba.pydata.org>`_
 - `numpy: Scientific Computing Tools For Python <https://numpy.org>`_
 - `pyproj: Python interface to PROJ library <https://pypi.org/project/pyproj/>`_
 - `scipy: Scientific Tools for Python <https://docs.scipy.org/doc//>`_

@@ -10,6 +10,7 @@ dependencies:
   - matplotlib
   - netCDF4
   - notebook
+  - numba
   - numpy
   - pyproj
   - python-dateutil
