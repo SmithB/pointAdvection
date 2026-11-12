@@ -65,6 +65,9 @@ dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 [tool.setuptools.packages.find]
 exclude = ["test*"]
 
+[project.scripts]                                                                                                                                                                                          
+"make_vel_interpolator_for_xy.py" = "scripts.make_vel_interpolator_for_xy:main"
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 norecursedirs = ".git"
@@ -74,3 +77,5 @@ python_files = [
 testpaths = [
     "test"
 ]
+
+
