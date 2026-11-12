@@ -15,5 +15,6 @@ import pointAdvection.utilities
 from pointAdvection.advection import advection
 import pointAdvection.version
 from pointAdvection.velocity import velocity
+from pointAdvection.advectionGrid import advectionGrid
 # get version number
 __version__ = pointAdvection.version.version
