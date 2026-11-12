@@ -1,3 +1,7 @@
+import datetime
+import os
+import re
+import numpy as np
 import pointAdvection.utilities
 
 # attempt imports
@@ -14,18 +18,21 @@ class velocity(obj):
         super(velocity, self).__init__()
         self.ndim=2
 
-
     def _from_local_vrt(self, v_file, read_errors=True, **kwargs):
-
-
-        t_re = re.compile('Vel-(\d\d\d\d)-(\d\d)-(\d\d).(\d\d\d\d)-(\d\d)-(\d\d).*')
+        """
+        Read velocity components from a set of vrt files named like
+        '*Vel-YYYY-MM-DD.YYYY-MM-DD*v.vrt', with the components in
+        matching '*vx.vrt', '*vy.vrt' (and '*ex.vrt', '*ey.vrt') files.
+        The time is the midpoint of the date range, in decimal years.
+        """
+        t_re = re.compile(r'Vel-(\d\d\d\d)-(\d\d)-(\d\d).(\d\d\d\d)-(\d\d)-(\d\d).*')
         y0, m0, d0, y1, m1, d1 = map(int, t_re.search(v_file).groups())
         t0=datetime.datetime(y0, m0, d0)
         t1=datetime.datetime(y1, m1, d1)
         t = t0 + (t1-t0)/2
 
         self.from_geotif(v_file, meta_only=True, **kwargs)
-        field_dict={'U':'vx','V':'vy','eU':'ex','eV':'ey'}
+        field_dict={'U':'vx','V':'vy'}
         if read_errors:
             field_dict['eU']='ex'
             field_dict['eV']='ey'
@@ -34,48 +41,64 @@ class velocity(obj):
             self.assign({out_field:temp.z})
         self.t = 2018 + (t-datetime.datetime(2018, 1, 1)).days/365.25
 
-
     def _from_NSIDC_GL(self, filename, **kwargs):
+        # Greenland ice velocity from GrIMP
         field_dict={'U':'vx','V':'vy','eU':'ex','eV':'ey'}
         self.from_h5(filename, field_mapping=field_dict, **kwargs)
 
     def _from_NSIDC_AA(self, filename, **kwargs):
+        # Antarctic ice velocity from UCI
         field_dict={'U':'VX','V':'VY','eU':'ERRX','eV':'ERRY'}
-        self=self.from_nc(filename, field_mapping=field_dict, **kwargs)
+        self.from_nc(filename, field_mapping=field_dict, **kwargs)
         self.EPSG=3031
+        # polygons in an '_edits.geojson' file next to the velocity file mark
+        # regions where the velocities should not be used
         edits_file=filename.replace('.nc','_edits.geojson')
         if os.path.isfile(edits_file):
-            self.assign(mask=np.ones_like(self.U))
-            df=gpd.read_file(edits_file)
-            for poly in df.geometry:
-                self.rasterize_poly(poly, field='mask', burn_value=0, raster_epsg=self.EPSG, poly_epsg=self.EPSG)
-            if np.any(self.mask==0):
-                self.mask[self.mask==0]=np.nan
-                for field in self.fields:
-                    if field=='mask':
-                        continue
-                    if len(self.U.shape)==2:
-                        setattr(self, field, getattr(self, field) * self.mask)
-                    else:
-                        for band in self.U.shape[3]:
-                            temp=getattr(self, field)[:,:,band]
-                            temp *= self.mask
-                            getattr(self, field)[:,:,band]=temp
+            self._apply_edits(edits_file)
+
+    def _apply_edits(self, edits_file):
+        """
+        Set velocity fields to NaN inside the polygons in edits_file
+        """
+        gpd = pointAdvection.utilities.import_dependency('geopandas',
+            extra='geopandas is needed to read velocity edits files',
+            raise_exception=True)
+        df=gpd.read_file(edits_file)
+        if df.crs is not None:
+            df = df.to_crs(epsg=self.EPSG)
+        # the mask is 2-D, even if the velocity fields have a time dimension
+        self.assign(mask=np.ones(self.U.shape[0:2]))
+        for poly in df.geometry:
+            self.rasterize_poly(poly, field='mask', burn_value=0, raster_epsg=self.EPSG, poly_epsg=self.EPSG)
+        if not np.any(self.mask==0):
+            return
+        self.mask[self.mask==0]=np.nan
+        for field in self.fields:
+            if field=='mask':
+                continue
+            z = getattr(self, field)
+            if z.ndim==2:
+                setattr(self, field, z * self.mask)
+            elif self.t_axis==0:
+                setattr(self, field, z * self.mask[None,:,:])
+            else:
+                setattr(self, field, z * self.mask[:,:,None])
+
     # Purpose: Read velocity data from a file of known format
     def from_file(self, filename, format='NSIDC-0725', **kwargs):
 
         if format in ['NSIDC-0725','NSIDC-0727', 'NSIDC-0731', 'NSIDC-0766']:
             self._from_NSIDC_GL(filename, **kwargs)
         elif format=='NSIDC-0720' or format=='NSIDC-0484':
-            # Antarctic ice velocity from UCI
             self._from_NSIDC_AA(filename,**kwargs)
         elif format=='local_vrt':
             self._from_local_vrt(filename, **kwargs)
         elif format=='h5':
             self.from_h5(filename, **kwargs)
         else:
-            print(f"format {format} for file {filename} unknown, skipping")
-        self.ndim=len(self.U.shape)
+            raise ValueError(f"format {format} for file {filename} unknown")
+        self.ndim=self.U.ndim
         return self
 
     def interp_to(self, x0, y0, t0=None):

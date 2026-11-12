@@ -59,7 +59,7 @@ Repository = "https://github.com/SmithB/pointAdvection"
 Issues = "https://github.com/SmithB/pointAdvection/issues"
 
 [project.optional-dependencies]
-all = ["fiona", "gdal", "notebook", "shapely"]
+all = ["fiona", "gdal", "geopandas", "notebook", "shapely"]
 dev = ["flake8", "pytest>=4.6", "pytest-cov"]
 
 [tool.setuptools.packages.find]

@@ -9,7 +9,6 @@ import pointAdvection
 import pointCollection as pc
 import json
 import datetime
-import re
 import argparse
 import sys
 
@@ -34,14 +33,14 @@ def parse_input_args(argv):
 
     parser = argparse.ArgumentParser(description='Make a displacement grid for a location based on a set of velocity measurements.', \
                                      fromfile_prefix_chars='@')
-    parser.add_argument('--xy0', type=float, nargs=2, help='interpolator center')
-    parser.add_argument('--width','-w', type=float, help='width of interpolator')
+    parser.add_argument('--xy0', type=float, nargs=2, required=True, help='interpolator center')
+    parser.add_argument('--width','-w', type=float, required=True, help='width of interpolator')
     parser.add_argument('--w_smooth', type=float, help='fill gaps in mean velocity field using this smoothing length')
-    parser.add_argument('--t_range', type=str, nargs='+', help='starting and ending times: two numbers comma or space separated')
+    parser.add_argument('--t_range', type=str, nargs='+', required=True, help='starting and ending times: two numbers comma or space separated')
     parser.add_argument('--velocity_t_range', type=str, nargs='+', help='range of velocity measurements to use: two numbers comma or space separated')
-    parser.add_argument('--velocity_source_file', type=str, help='json file listing times, filenames, and formats')
+    parser.add_argument('--velocity_source_file', type=str, required=True, help='json file listing times, filenames, and formats')
     parser.add_argument('--res', type=float, default=500, help='resolution of output map')
-    parser.add_argument('--lagrangian_epoch', type=float,  help='time to/from which points will be advected')
+    parser.add_argument('--lagrangian_epoch', type=float, required=True, help='time to/from which points will be advected')
     parser.add_argument('--t_step', type=float, default=0.25, help='time resolution of output maps')
     parser.add_argument('--speed_est', type=float, default=1.e3, help='speed estimate used to pad input range')
     parser.add_argument('--save_base', type=str, default='./xy0_interpolators')
@@ -66,7 +65,7 @@ def parse_input_args(argv):
         if ',' in args.velocity_t_range[0]:
             args.velocity_t_range=[*map(float, args.velocity_t_range[0].split(','))]
         else:
-            args.velocity_t_range=[*map(float, args.t_range)]
+            args.velocity_t_range=[*map(float, args.velocity_t_range)]
 
     return args
 
@@ -74,28 +73,25 @@ def make_adv_from_json(args, xg, yg, bds_pad):
     with open(args.velocity_source_file,'r') as fh:
         vel_files=json.load(fh)
 
-    times = [vi['time'] for vi in vel_files if not isinstance(vi['time'],str)]
+    # entries with a numeric time are velocity maps; others (e.g. 'mean') are special
+    entries = [vi for vi in vel_files if not isinstance(vi['time'], str)]
     if args.velocity_t_range is not None:
-        times= [tt for tt in times if (tt >= args.velocity_time_range[0]) and (tt <= args.velocity_time_range[1])]
-
-    time_order = np.argsort(times)
+        entries = [vi for vi in entries if (vi['time'] >= args.velocity_t_range[0]) and (vi['time'] <= args.velocity_t_range[1])]
+    entries = sorted(entries, key=lambda vi: vi['time'])
 
     # make a list of advection objects, one for each velocity file
     advs=[]
 
-    for ind in time_order:
-        temp=pointAdvection.velocity().from_file(vel_files[ind]['file'], format=vel_files[ind]['format'],  bounds=bds_pad)
+    for vi in entries:
+        temp=pointAdvection.velocity().from_file(vi['file'], format=vi['format'],  bounds=bds_pad)
         if 'mask' not in temp.fields:
-            temp.mask=np.isfinite(temp.U).astype(float)
+            temp.assign(mask=np.isfinite(temp.U).astype(float))
         if temp.time is None:
-            if temp.t is not None:
-                temp.time=temp.t
-            else:
-                temp.time=vel_files[ind]['time']
+            temp.time=vi['time']
         adv_i=pointAdvection.advection()
         adv_i.x=xg
         adv_i.y=yg
-        adv_i.t=times[ind]
+        adv_i.t=vi['time']
         adv_i.velocity=temp
         advs += [adv_i]
 
@@ -104,8 +100,9 @@ def make_adv_from_json(args, xg, yg, bds_pad):
     for vi in vel_files:
         if vi['time']=='mean':
           adv.vel_mean=pointAdvection.velocity().from_file(vi['file'], format=vi['format'], bounds=bds_pad)
-          N_smooth=np.ceil(args.w_smooth/(adv.vel_mean.x[1]-adv.vel_mean.x[0]))
-          adv.vel_mean.fill_smoothed(fields=['U','V', 'eU', 'eV'], w_smooth=N_smooth)
+          if args.w_smooth is not None:
+              N_smooth=np.ceil(args.w_smooth/(adv.vel_mean.x[1]-adv.vel_mean.x[0]))
+              adv.vel_mean.fill_smoothed(fields=['U','V', 'eU', 'eV'], w_smooth=N_smooth)
           adv.vel_mean=adv.vel_mean.interp_to(adv.velocity.x, adv.velocity.y)
 
     return adv
@@ -161,10 +158,16 @@ def make_vel_interpolator_for_xy(argv):
     adv.velocity.time = t_vel - args.lagrangian_epoch
 
     # account for the ratio between velocity and projected-coordinate displacements
-    adv.velocity.get_latlon(srs_epsg=args.EPSG)
-    scale=pc.ps_scale_for_lat(adv.velocity.latitude)[:,:,None]
-    adv.velocity.U /= scale
-    adv.velocity.V /= scale
+    # (ps_scale_for_lat is only correct for the standard polar stereographic grids)
+    if args.EPSG in (3031, 3413):
+        adv.velocity.get_latlon(srs_epsg=args.EPSG)
+        scale=pc.ps_scale_for_lat(adv.velocity.latitude)
+        if adv.velocity.U.ndim == 3:
+            scale = scale[:,:,None]
+        adv.velocity.U /= scale
+        adv.velocity.V /= scale
+    elif args.VERBOSE:
+        print(f'EPSG={args.EPSG} is not 3031 or 3413: velocities will not be corrected for projection distortion')
 
     blocksize=100
     adv.t0=0
@@ -189,11 +192,14 @@ def make_vel_interpolator_for_xy(argv):
     with h5py.File(interpolator_save_file,'r+') as h5f:
         for group in ['xy0','xy1']:
             h5f[group].attrs['lagrangian_epoch']=args.lagrangian_epoch
-            h5f[group]['t'].attrs['units']='years'
+            # depending on the version, pointCollection writes the time
+            # coordinate as either 't' or 'time'
+            t_name = 'time' if 'time' in h5f[group] else 't'
+            h5f[group][t_name].attrs['units']='years'
 
 def main(args=None):
     if args is None:
-        args=sys.argv
+        args=sys.argv[1:]
     make_vel_interpolator_for_xy(args)
 
 if __name__=='__main__':

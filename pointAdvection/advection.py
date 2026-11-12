@@ -61,7 +61,6 @@ import scipy.interpolate
 import scipy.spatial
 import pointAdvection.utilities
 
-import time
 # attempt imports
 plt = pointAdvection.utilities.import_dependency('matplotlib.pyplot')
 mtri = pointAdvection.utilities.import_dependency('matplotlib.mtri')
@@ -150,6 +149,15 @@ class advection():
             self.streak['x'] += [self.x0.copy()]
             self.streak['y'] += [self.y0.copy()]
             self.streak['t'] += [t.copy()]
+
+    def __reorder_coordinates__(self):
+        """
+        Reorder the coordinate names of the velocity grid to match
+        fields that have been transposed from (time, y, x) to (y, x, time)
+        """
+        coordinates = getattr(self.velocity, 'coordinates', None)
+        if coordinates is not None and len(coordinates) == 3:
+            self.velocity.coordinates = [coordinates[1], coordinates[2], coordinates[0]]
 
     def case_insensitive_filename(self,
             filename: str | pathlib.Path | io.BytesIO
@@ -335,6 +343,7 @@ class advection():
                 self.velocity.eV = np.transpose(self.velocity.eV, axes=(1,2,0))
             # update time dimension axis
             self.velocity.t_axis = 2
+            self.__reorder_coordinates__()
         # create mask for invalid velocity points
         mask = ((self.velocity.U.data == self.velocity.fill_value) & \
             (self.velocity.V.data == self.velocity.fill_value))
@@ -424,6 +433,7 @@ class advection():
                 self.velocity.eV = np.transpose(self.velocity.eV, axes=(1,2,0))
             # update time dimension axis
             self.velocity.t_axis = 2
+            self.__reorder_coordinates__()
         # create mask for invalid velocity points
         mask = ((self.velocity.U.data == self.velocity.fill_value) & \
             (self.velocity.V.data == self.velocity.fill_value))
@@ -450,7 +460,7 @@ class advection():
         setattr(self.velocity, 'type', 'grid')
         try:
             self.velocity.__update_size_and_shape__()
-        except:
+        except AttributeError:
             pass
         return self
 
@@ -528,6 +538,7 @@ class advection():
                 self.velocity.eV = np.transpose(self.velocity.eV, axes=(1,2,0))
             # update time dimension axis
             self.velocity.t_axis = 2
+            self.__reorder_coordinates__()
         # use scale to convert to common units
         self.velocity.U *= scale
         self.velocity.V *= scale
@@ -550,7 +561,7 @@ class advection():
         setattr(self.velocity, 'type', 'grid')
         try:
             self.velocity.__update_size_and_shape__()
-        except:
+        except AttributeError:
             pass
         return self
 
@@ -575,7 +586,9 @@ class advection():
 
             """
         # calculate an error-weighted average of the velocities
-        v = self.velocity.copy()
+        if velocity is None:
+            velocity = self.velocity
+        v = velocity.copy()
         wU = 1/v.eU**2/np.nansum(1/v.eU**2, axis=2)[:,:,None]
         wV = 1/v.eV**2/np.nansum(1/v.eV**2, axis=2)[:,:,None]
         vel_mean=pc.grid.data().from_dict({'x':np.array(v.x),
@@ -585,7 +598,7 @@ class advection():
                                'eU':np.sqrt(np.nansum(wU**2*v.eU**2, axis=2)),
                                'eV':np.sqrt(np.nansum(wV**2*v.eV**2, axis=2))})
         bad = np.sum(np.isfinite(wU), axis=2)==0
-        for field in ['U','V']:
+        for field in ['U','V','eU','eV']:
             getattr(vel_mean, field)[bad]=np.nan
         # fill gaps in vel_mean
         if w_smooth is not None:
@@ -631,7 +644,7 @@ class advection():
             delta_year = timescale.time._to_sec['years']/self._to_sec
             delta_tol = delta_year/8
 
-        for ii in range(v.U.shape[2]-1):
+        for ii in range(v.U.shape[2]):
             this_U = v.U[:,:,ii].copy()
             this_V = v.V[:,:,ii].copy()
             this_eU = v.eU[:,:,ii].copy()
@@ -658,7 +671,7 @@ class advection():
                 for jj in [ii-1, ii+1]:
                     # try to build the average of the previous time slice and the
                     # next time slice
-                    if jj > 0 and jj < v.U.shape[2]:
+                    if jj >= 0 and jj < v.U.shape[2]:
                         good = np.isfinite(v.U[:,:,jj])
                         u_temp[good] += v.U[:,:,jj][good]
                         v_temp[good] += v.V[:,:,jj][good]
@@ -730,6 +743,10 @@ class advection():
             reference time step for the advection object to use.  The default is 0.25 (years)
         blocksize: int, optional
             grid will be divided into blocks of this size, or run all at once if None
+        report_progress: bool, optional
+            print the elapsed time for each block
+        DEBUG: bool, optional
+            print the output time steps
 
         Returns
         -------
@@ -740,9 +757,9 @@ class advection():
             t_range = [np.nanmin(self.velocity.time), np.nanmax(self.velocity.time)]
         if bounds is None:
             bounds=self.velocity.bounds() + [t_range]
-        else:
-            if len(bounds)==2:
-                bounds += tuple([t_range])
+        elif len(bounds)==2:
+            # copy so that the caller's bounds are not modified
+            bounds = list(bounds) + [t_range]
         if t_step is None:
             # use the times on the velocity object
             ti = self.velocity.t
@@ -782,8 +799,8 @@ class advection():
                             self.translate_parcel(step=advection_time_step)
                         except ValueError:
                             # ValueError is thrown when all points are outside the velocity map
-                            self.x0 *= np.nan
-                            self.y0 *= np.nan
+                            self.x0 = np.full_like(self.x, np.nan)
+                            self.y0 = np.full_like(self.y, np.nan)
                         xf[rows, cols, this_ind]=self.x0.reshape(xg_sub.shape)
                         yf[rows, cols, this_ind]=self.y0.reshape(xg_sub.shape)
                         # update the initial coordinates for the next translation
@@ -803,7 +820,7 @@ class advection():
 
 
     #PURPOSE: interpolation objects to allow fast interpolation initial positions
-    def xy0_interpolator(self, bounds=None, t_range=None, t_step=None, advection_time_step=10,
+    def xy0_interpolator(self, bounds=None, t_range=None, t_step=None, advection_time_step=0.25,
                          blocksize=100, DEBUG=False, report_progress=False):
         """
         Build interpolation objects from initial to final positions
@@ -822,7 +839,13 @@ class advection():
             The time step for the interpolation, in time_units.  If None,
             the time values in the velocity object will be used. The default is None.
         advection_time_step : float, optional
-            The time step to use in parcel tracking, in days.  The default is 5.
+            The time step to use in parcel tracking, in time_units.  The default is 0.25.
+        blocksize: int, optional
+            grid will be divided into blocks of this size, or run all at once if None
+        DEBUG: bool, optional
+            print the output time steps
+        report_progress: bool, optional
+            print the elapsed time for each block
         Returns
         -------
         grid_obj : pc.grid.data
@@ -835,8 +858,9 @@ class advection():
         # plus the time range
         if bounds is None:
             bounds = self.velocity.bounds() + [t_range]
-        elif (bounds is not None) and (len(bounds) == 2):
-            bounds += [t_range]
+        elif len(bounds) == 2:
+            # copy so that the caller's bounds are not modified
+            bounds = list(bounds) + [t_range]
         # use the time from the velocity field
         # or calculate the time using the the specified time step
         if t_step is None:
@@ -845,7 +869,7 @@ class advection():
         else:
             ti = np.arange(bounds[2][0], bounds[2][1]+t_step, t_step)
         if DEBUG:
-            print('xy0_interpolator: time_steps={ti}')
+            print(f'xy0_interpolator: time_steps={ti}')
         dx=self.velocity.x[1]-self.velocity.x[0]
 
         x0, y0 = [np.arange(bb[0]-dx, bb[1]+dx, dx) for bb in bounds[0:2]]
@@ -874,8 +898,8 @@ class advection():
                         self.translate_parcel(step=advection_time_step)
                     except ValueError:
                         # ValueError is thrown when all points are outside the velocity map
-                        self.x0 *= np.nan
-                        self.y0 *= np.nan
+                        self.x0 = np.full_like(self.x, np.nan)
+                        self.y0 = np.full_like(self.y, np.nan)
                     x_init[rows, cols, t_ind] = self.x0.reshape(xg_sub.shape)
                     y_init[rows, cols, t_ind] = self.y0.reshape(xg_sub.shape)
 
@@ -952,7 +976,11 @@ class advection():
             # average number of steps between the two datasets
             n_steps = np.abs(np.mean(self.t0) - np.mean(self.t))/step
         # check input advection functions
-        kwargs.update({'N': np.int64(n_steps)})
+        # use at least one step so that intervals shorter than step are advected
+        N = np.int64(n_steps)
+        if (N == 0) and (n_steps > 0):
+            N = np.int64(1)
+        kwargs.update({'N': N})
         logging.debug(f'Advecting {n_steps} steps')
         if (self.integrator == 'euler'):
             # euler: Explicit Euler method
@@ -1016,13 +1044,15 @@ class advection():
         # keep track of time for 3-dimensional interpolations
         t = np.copy(self.t)
         for i in range(kwargs['N']):
+            # evaluate the intermediate stages at their own times
+            # (matters for time-variable velocity fields)
             u1, v1 = self.interpolate(x=self.x0, y=self.y0, t=t)
             x2, y2 = (self.x0 + 0.5*u1*dt, self.y0 + 0.5*v1*dt)
-            u2, v2 = self.interpolate(x=x2, y=y2, t=t)
+            u2, v2 = self.interpolate(x=x2, y=y2, t=t + 0.5*dt)
             x3, y3 = (self.x0 + 0.5*u2*dt, self.y0 + 0.5*v2*dt)
-            u3, v3 = self.interpolate(x=x3, y=y3, t=t)
+            u3, v3 = self.interpolate(x=x3, y=y3, t=t + 0.5*dt)
             x4, y4 = (self.x0 + u3*dt, self.y0 + v3*dt)
-            u4, v4 = self.interpolate(x=x4, y=y4, t=t)
+            u4, v4 = self.interpolate(x=x4, y=y4, t=t + dt)
             self.x0 += dt*(u1 + 2.0*u2 + 2.0*u3 + u4)/6.0
             self.y0 += dt*(v1 + 2.0*v2 + 2.0*v3 + v4)/6.0
             # add to time
@@ -1114,6 +1144,11 @@ class advection():
             time coordinates
         """
         kwargs.setdefault('t', None)
+        # stage times for Runge-Kutta-Fehlberg 4(5) method
+        if kwargs['t'] is None:
+            t = [None]*6
+        else:
+            t = [kwargs['t'] + c*dt for c in (0.0, 1.0/4.0, 3.0/8.0, 12.0/13.0, 1.0, 1.0/2.0)]
         # Butcher tableau for Runge-Kutta-Fehlberg 4(5) method
         A = np.array([[1.0/4.0, 0.0, 0.0, 0.0, 0.0],
             [3.0/32.0, 9.0/32.0, 0.0, 0.0, 0.0],
@@ -1121,22 +1156,22 @@ class advection():
             [439.0/216.0, -8.0, 3680.0/513.0, -845.0/4104.0, 0.0],
             [-8.0/27.0, 2.0, -3544.0/2565.0, 1859.0/4104.0, -11.0/40.0]])
         # calculate velocities and parameters for iteration
-        u1, v1 = self.interpolate(x=xi, y=yi, t=kwargs['t'])
+        u1, v1 = self.interpolate(x=xi, y=yi, t=t[0])
         x2 = xi + A[0,0]*u1*dt
         y2 = yi + A[0,0]*v1*dt
-        u2, v2 = self.interpolate(x=x2, y=y2, t=kwargs['t'])
+        u2, v2 = self.interpolate(x=x2, y=y2, t=t[1])
         x3 = xi + (A[1,0]*u1 + A[1,1]*u2)*dt
         y3 = yi + (A[1,0]*v1 + A[1,1]*v2)*dt
-        u3, v3 = self.interpolate(x=x3, y=y3, t=kwargs['t'])
+        u3, v3 = self.interpolate(x=x3, y=y3, t=t[2])
         x4 = xi + (A[2,0]*u1 + A[2,1]*u2 + A[2,2]*u3)*dt
         y4 = yi + (A[2,0]*v1 + A[2,1]*v2 + A[2,2]*v3)*dt
-        u4, v4 = self.interpolate(x=x4, y=y4, t=kwargs['t'])
+        u4, v4 = self.interpolate(x=x4, y=y4, t=t[3])
         x5 = xi + (A[3,0]*u1 + A[3,1]*u2 + A[3,2]*u3 + A[3,3]*u4)*dt
         y5 = yi + (A[3,0]*v1 + A[3,1]*v2 + A[3,2]*v3 + A[3,3]*v4)*dt
-        u5, v5 = self.interpolate(x=x5, y=y5, t=kwargs['t'])
+        u5, v5 = self.interpolate(x=x5, y=y5, t=t[4])
         x6 = xi + (A[4,0]*u1 + A[4,1]*u2 + A[4,2]*u3 + A[4,3]*u4 + A[4,4]*u5)*dt
         y6 = yi + (A[4,0]*v1 + A[4,1]*v2 + A[4,2]*v3 + A[4,3]*v4 + A[4,4]*v5)*dt
-        u6, v6 = self.interpolate(x=x6, y=y6, t=kwargs['t'])
+        u6, v6 = self.interpolate(x=x6, y=y6, t=t[5])
         return (np.array([u1,u2,u3,u4,u5,u6]), np.array([v1,v2,v3,v4,v5,v6]))
 
     def buffered_bounds(self, buffer=5e4):
@@ -1198,11 +1233,9 @@ class advection():
         nn = len(x)
         # get points for polygon
         if (self.velocity.type == 'grid'):
-            # create polygon with the extents of the image
+            # the image is a rectangle: check against its extents directly
             xmin,xmax,ymin,ymax = self.velocity.extent
-            return (x>=xmin) & (x<= xmax) & (y>= ymin) & (y<=ymax)
-            #xpts = np.array([xmin, xmax, xmax, xmin, xmin])
-            #ypts = np.array([ymin, ymin, ymax, ymax, ymin])
+            return (x >= xmin) & (x <= xmax) & (y >= ymin) & (y <= ymax)
         elif (self.velocity.type == 'mesh'):
             # create polygon with convex hull of points
             points = np.c_[self.velocity.x, self.velocity.y]
